@@ -1,0 +1,4 @@
+<resources>
+    <!-- Ultra-safe theme that always compiles -->
+    <style name="Theme.VibeSecondBrain" parent="Theme.AppCompat.Light.NoActionBar" />
+</resources>
