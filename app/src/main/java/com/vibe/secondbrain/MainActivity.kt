@@ -42,7 +42,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private lateinit var btnTalk: Button
     private lateinit var btnPhoto: Button
     private lateinit var btnVideo: Button
-    private lateinit var btnNewChat: Button
+    private lateinit var btnNewChat: Button   // 🆕 Added new chat button
 
     private lateinit var speech: SpeechRecognizer
     private lateinit var tts: TextToSpeech
@@ -62,6 +62,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         btnTalk = findViewById(R.id.btnPush)
         btnPhoto = findViewById(R.id.btnPhoto)
         btnVideo = findViewById(R.id.btnVideo)
+        btnNewChat = findViewById(R.id.btnNewChat)  // 🆕 Find new chat button
 
         ensurePermissions()
 
@@ -76,7 +77,15 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             prefs.edit().putString("session", it).apply()
         }
 
-        // Push-to-talk UX
+        // 🧹 Handle New Chat button tap
+        btnNewChat.setOnClickListener {
+            sessionId = UUID.randomUUID().toString()
+            prefs.edit().putString("session", sessionId).apply()
+            status.text = "Started a new chat."
+            speak("Started a new chat.")
+        }
+
+        // 🎙️ Push-to-talk UX
         btnTalk.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> { if (tts.isSpeaking) tts.stop(); startListening() }
@@ -85,7 +94,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             true
         }
 
-        // Gallery pickers
+        // 📸 Gallery pickers
         btnPhoto.setOnClickListener {
             val i = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
             pickImage.launch(i)
