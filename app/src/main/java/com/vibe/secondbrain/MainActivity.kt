@@ -42,6 +42,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private lateinit var btnTalk: Button
     private lateinit var btnPhoto: Button
     private lateinit var btnVideo: Button
+    private lateinit var btnNewChat: Button
 
     private lateinit var speech: SpeechRecognizer
     private lateinit var tts: TextToSpeech
