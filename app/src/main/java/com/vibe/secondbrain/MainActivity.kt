@@ -3,6 +3,7 @@ package com.vibe.secondbrain
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
@@ -29,11 +30,11 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
-import java.util.regex.Pattern
+import java.util.UUID
 
 class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
-    // 🔧 Set to your Replit URL (NO trailing slash)
+    // 🔧 Your Replit backend (NO trailing slash)
     private val BASE = "https://create-replit-borisaiassistant.replit.app"
 
     private lateinit var status: TextView
@@ -47,6 +48,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private val client = OkHttpClient()
     private var ttsReady = false
 
+    // 🧠 Keep a session id so /chat can ask follow-ups and remember context
+    private lateinit var prefs: SharedPreferences
+    private lateinit var sessionId: String
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -59,10 +64,18 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
         ensurePermissions()
 
+        // Init TTS + STT
         tts = TextToSpeech(this, this)
         speech = SpeechRecognizer.createSpeechRecognizer(this)
         speech.setRecognitionListener(recListener)
 
+        // 🔐 load or create a persistent session id
+        prefs = getSharedPreferences("vibe", MODE_PRIVATE)
+        sessionId = prefs.getString("session", null) ?: UUID.randomUUID().toString().also {
+            prefs.edit().putString("session", it).apply()
+        }
+
+        // Push-to-talk UX
         btnTalk.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> { if (tts.isSpeaking) tts.stop(); startListening() }
@@ -71,6 +84,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             true
         }
 
+        // Gallery pickers
         btnPhoto.setOnClickListener {
             val i = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
             pickImage.launch(i)
@@ -82,8 +96,13 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     // ---------- TTS ----------
-    override fun onInit(code: Int) { ttsReady = code == TextToSpeech.SUCCESS; if (ttsReady) tts.language = Locale.US }
-    private fun speak(text: String) { if (ttsReady) tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "utt") }
+    override fun onInit(code: Int) {
+        ttsReady = code == TextToSpeech.SUCCESS
+        if (ttsReady) tts.language = Locale.US
+    }
+    private fun speak(text: String) {
+        if (ttsReady) tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "utt")
+    }
 
     // ---------- STT ----------
     private val recListener = object : RecognitionListener {
@@ -95,8 +114,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         override fun onError(error: Int) { status.text = "Mic error: $error" }
         override fun onResults(results: Bundle) {
             val text = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-            if (!text.isNullOrBlank()) { transcript.text = text; handleUtterance(text) }
-            else status.text = "Heard nothing, try again."
+            if (!text.isNullOrBlank()) {
+                transcript.text = text
+                handleUtterance(text)
+            } else status.text = "Heard nothing, try again."
         }
         override fun onPartialResults(partialResults: Bundle) {}
         override fun onEvent(eventType: Int, params: Bundle?) {}
@@ -112,94 +133,72 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         speech.startListening(i)
     }
 
-    // ---------- Intent routing to your backend contract ----------
+    // ---------- Conversational routing to /chat ----------
     private fun handleUtterance(text: String) {
-        val t = text.lowercase(Locale.getDefault()).trim()
-
-        val exp = Regex("spent\\s+(\\d+[\\.]?\\d*)\\s+(?:on\\s+)?(\\w+)(?:\\s+note\\s+(.+))?")
-        val habit = Regex("^habit\\s+([\\w\\- ]+)\\s+(yes|no|\\d+)")
-        val noteTitled = Regex("^note\\s+([^:]+):\\s+(.+)$")
-        val noteSimple = Regex("^note\\s+(.+)$")
-        val jrnl = Regex("^(jrnl|journal)\\s+(.+)$")
-
-        when {
-            exp.containsMatchIn(t) -> {
-                val m = exp.find(t)!!
-                val amt = m.groupValues[1].toDoubleOrNull() ?: 0.0
-                val cat = m.groupValues[2]
-                val n = (m.groupValues.getOrNull(3) ?: "").trim()
-                sendJson("$BASE/expense", JSONObject().apply {
-                    put("amount", amt)
-                    put("category", cat.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() })
-                    if (n.isNotBlank()) put("note", n)
-                }, "Logged expense.", "Failed to log expense.")
-            }
-            habit.containsMatchIn(t) -> {
-                val m = habit.find(t)!!
-                val name = m.groupValues[1].trim().replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
-                val raw = m.groupValues[2].trim().lowercase(Locale.getDefault())
-                val status = when {
-                    raw in listOf("yes","y","true","done","completed","complete") -> "completed"
-                    raw in listOf("no","n","false","skip","skipped") -> "skipped"
-                    Pattern.compile("\\d+").matcher(raw).find() -> "${Regex("(\\d+)").find(raw)?.groupValues?.get(1) ?: raw}min"
-                    else -> "completed"
-                }
-                sendJson("$BASE/habit", JSONObject().apply {
-                    put("habit", name); put("status", status)
-                }, "Habit logged.", "Failed to log habit.")
-            }
-            noteTitled.containsMatchIn(t) -> {
-                val m = noteTitled.find(t)!!
-                val title = m.groupValues[1].trim()
-                val content = m.groupValues[2].trim()
-                sendJson("$BASE/note", JSONObject().apply { put("title", title); put("content", content) },
-                    "Note added.", "Failed to add note.")
-            }
-            noteSimple.containsMatchIn(t) -> {
-                val m = noteSimple.find(t)!!
-                val content = m.groupValues[1].trim()
-                sendJson("$BASE/note", JSONObject().apply { put("title", "Quick Note"); put("content", content) },
-                    "Note added.", "Failed to add note.")
-            }
-            jrnl.containsMatchIn(t) -> {
-                val m = jrnl.find(t)!!
-                sendJson("$BASE/journal", JSONObject().put("note", m.groupValues[2].trim()),
-                    "Journal saved.", "Failed to save journal.")
-            }
-            else -> {
-                sendJson("$BASE/journal", JSONObject().put("note", text.trim()),
-                    "Journal saved.", "Failed to save journal.")
-            }
-        }
+        sendChatMessage(text)
     }
 
-    private fun sendJson(url: String, body: JSONObject, okMsg: String, failMsg: String) {
+    private fun sendChatMessage(userText: String) {
         Thread {
             try {
+                val body = JSONObject().apply {
+                    put("session", sessionId)    // keep conversation context
+                    put("message", userText)     // backend expects "message"
+                }
+
                 val req = Request.Builder()
-                    .url(url)
-                    .addHeader("Content-Type","application/json")
+                    .url("$BASE/chat")
+                    .addHeader("Content-Type", "application/json")
                     .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                     .build()
+
                 val resp = client.newCall(req).execute()
-                val ok = resp.isSuccessful
+                val code = resp.code
+                val txt = resp.body?.string() ?: ""
+
+                var reply = "..."
+                var saved = ""
+                try {
+                    val j = JSONObject(txt)
+                    reply = j.optString("reply", txt)
+                    saved = j.optString("saved", "")
+                    val newSession = j.optString("session", sessionId)
+                    if (newSession.isNotBlank() && newSession != sessionId) {
+                        sessionId = newSession
+                        prefs.edit().putString("session", sessionId).apply()
+                    }
+                } catch (_: Exception) {
+                    reply = if (code in 200..299) txt else "Chat failed ($code)"
+                }
+
                 runOnUiThread {
-                    status.text = if (ok) "✅ $okMsg" else "❌ $failMsg"
-                    speak(if (ok) okMsg else failMsg)
+                    if (code in 200..299) {
+                        val savedInfo = if (saved.isNotBlank()) " (saved: $saved)" else ""
+                        status.text = "🤖 $reply$savedInfo"
+                        speak(reply)
+                    } else {
+                        status.text = "❌ Chat failed ($code): $txt"
+                        speak("Request failed.")
+                    }
                 }
             } catch (e: Exception) {
-                runOnUiThread { status.text = "Network error: ${e.message}"; speak("Network error.") }
+                runOnUiThread {
+                    status.text = "Network error: ${e.message}"
+                    speak("Network error.")
+                }
             }
         }.start()
     }
 
     // ---------- Media pick & upload ----------
-    private val pickImage = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
-        if (res.resultCode == Activity.RESULT_OK) res.data?.data?.let { uploadMedia(it, false) }
-    }
-    private val pickVideo = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
-        if (res.resultCode == Activity.RESULT_OK) res.data?.data?.let { uploadMedia(it, true) }
-    }
+    private val pickImage =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+            if (res.resultCode == Activity.RESULT_OK) res.data?.data?.let { uploadMedia(it, false) }
+        }
+    private val pickVideo =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+            if (res.resultCode == Activity.RESULT_OK) res.data?.data?.let { uploadMedia(it, true) }
+        }
 
     private fun copyToCache(uri: Uri): File? = try {
         val mime = contentResolver.getType(uri) ?: ""
@@ -248,6 +247,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         }.start()
     }
 
+    // ---------- Permissions ----------
     private fun ensurePermissions() {
         val toAsk = mutableListOf<String>()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
